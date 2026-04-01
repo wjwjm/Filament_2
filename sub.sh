@@ -1,42 +1,26 @@
 #!/bin/bash
+#SBATCH -J filament
 #SBATCH -p gpu
-#SBATCH -x g0601,g0605
+#SBATCH -N 1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
+#SBATCH -t 02:00:00
 
 set -euo pipefail
 
-# 进入提交目录（Slurm 批处理推荐），兜底到脚本目录
-cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")}"
+# 进入提交目录（Slurm 推荐），兜底到脚本目录
+cd "${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
-# 可按需覆盖：CFG/OUT/DTYPE
-CFG="${CFG:-khz_config.json}"
-OUT="${OUT:-khzfil_out.npz}"
-DTYPE="${DTYPE:-fp32}"
-CONVERT_TO_MAT="${CONVERT_TO_MAT:-1}"
-MAT_DIR="${MAT_DIR:-matlab保存数据}"
-MAT_NAME="${MAT_NAME:-}"
-REMOVE_NPZ="${REMOVE_NPZ:-1}"
+# 可覆盖参数：CFG
+CFG="${CFG:-configs/isaacs2022_single_120fs.yaml}"
 
 if [[ ! -f "$CFG" ]]; then
-  echo "[fatal] config not found: $CFG"
+  echo "[fatal] 配置文件不存在: $CFG"
   exit 3
 fi
 
-if [[ ! -f "test_run.py" ]]; then
-  echo "[fatal] test_run.py not found in $(pwd)"
-  exit 3
-fi
-
-module load miniforge/25.3.0-3
-
-# 兼容非交互 shell 的 conda 激活方式
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate Filament_python
-
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
-export UPPE_USE_GPU=1
-export PYTHONUNBUFFERED=1
-
-# 与作业申请线程数对齐（若设置了 --cpus-per-task）
+# 线程数与 Slurm 对齐
 if [[ -n "${SLURM_CPUS_PER_TASK:-}" ]]; then
   export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
   export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
@@ -44,37 +28,20 @@ if [[ -n "${SLURM_CPUS_PER_TASK:-}" ]]; then
   export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 fi
 
-python - <<'PY'
-import os, sys
-try:
-    import cupy as cp
-    n = cp.cuda.runtime.getDeviceCount()
-    if n > 0:
-        dev = cp.cuda.Device()
-        props = cp.cuda.runtime.getDeviceProperties(dev.id)
-        name = props["name"].decode() if isinstance(props["name"], bytes) else props["name"]
-        print(
-            f"[预检] 运行环境: UPPE_USE_GPU={os.environ.get('UPPE_USE_GPU')} | "
-            f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')} | "
-            f"SLURM_CPUS_PER_TASK={os.environ.get('SLURM_CPUS_PER_TASK')} | "
-            f"device_count={n} | using={dev.id}:{name}"
-        )
-    else:
-        print("[预检] 未检测到可见GPU，任务终止。")
-        sys.exit(2)
-except Exception as e:
-    print(f"[预检] CuPy/驱动初始化失败: {e}")
-    sys.exit(1)
-PY
-
-CMD=(python test_run.py --cfg "$CFG" --gpu --dtype "$DTYPE" --out "$OUT")
-if [[ "$CONVERT_TO_MAT" == "1" ]]; then
-  CMD+=(--mat-dir "$MAT_DIR")
-  if [[ -n "$MAT_NAME" ]]; then
-    CMD+=(--mat-name "$MAT_NAME")
-  fi
-  if [[ "$REMOVE_NPZ" == "1" ]]; then
-    CMD+=(--remove-npz)
+# 可选：根据集群环境启用 conda（不存在则跳过）
+if command -v conda >/dev/null 2>&1; then
+  source "$(conda info --base)/etc/profile.d/conda.sh" || true
+  if conda env list | awk '{print $1}' | grep -qx "Filament_python"; then
+    conda activate Filament_python
   fi
 fi
-"${CMD[@]}"
+
+export PYTHONUNBUFFERED=1
+
+echo "[info] 使用配置: $CFG"
+echo "[info] 输出目录由配置文件中的 output.dir 决定"
+echo "[info] 提交命令示例: sbatch --gpus=1 ./sub.sh"
+
+python scripts/run_case.py "$CFG"
+
+echo "[done] 运行完成。"
