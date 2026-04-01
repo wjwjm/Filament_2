@@ -1,0 +1,7 @@
+numpy>=1.24
+scipy>=1.10
+pyyaml>=6.0
+matplotlib>=3.7
+h5py>=3.8
+cupy-cuda12x; platform_system == "Linux"
+pytest>=7.4
